@@ -20,6 +20,9 @@ use sev::firmware::host::{CertTableEntry, CertType};
 use std::sync::OnceLock;
 use x509_parser::prelude::*;
 
+mod fetch_certs;
+use fetch_certs::{fetch_cert_chain};
+
 #[derive(Serialize, Deserialize)]
 pub struct SnpEvidence {
     attestation_report: AttestationReport,
@@ -34,7 +37,7 @@ const LOADER_SPL_OID: Oid<'static> = oid!(1.3.6 .1 .4 .1 .3704 .1 .3 .1);
 
 #[derive(Debug)]
 pub struct Snp {
-    vendor_certs: VendorCertificates,
+    //vendor_certs: VendorCertificates,
 }
 
 pub(crate) fn load_milan_cert_chain() -> &'static Result<VendorCertificates> {
@@ -56,11 +59,12 @@ pub(crate) fn load_milan_cert_chain() -> &'static Result<VendorCertificates> {
 
 impl Snp {
     pub fn new() -> Result<Self> {
-        let Result::Ok(vendor_certs) = load_milan_cert_chain() else {
+        /*let Result::Ok(vendor_certs) = load_milan_cert_chain() else {
             bail!("Failed to load Milan cert chain");
         };
         let vendor_certs = vendor_certs.clone();
-        Ok(Self { vendor_certs })
+        Ok(Self { vendor_certs })*/
+        Ok(Self {  })
     }
 }
 
@@ -84,11 +88,47 @@ impl Verifier for Snp {
             cert_chain,
         } = serde_json::from_slice(evidence).context("Deserialize Quote failed.")?;
 
-        let Some(cert_chain) = cert_chain else {
+        /*let Some(cert_chain) = cert_chain else {
             bail!("Cert chain is unset");
-        };
+        };*/
 
-        verify_report_signature(&report, &cert_chain, &self.vendor_certs)?;
+        let cert_table;
+
+        match cert_chain {
+            Some(cert_chain) => {
+                // cert_chain is set
+                let Result::Ok(vendor_certs) = load_milan_cert_chain() else {
+                    bail!("Failed to load Milan cert chain");
+                };
+                verify_report_signature(&report, &cert_chain, &vendor_certs.clone())?;
+            }
+            None => {
+                // Handle the error when cert_chain is not set
+                let Result::Ok(fetched_vendor_certs) = fetch_cert_chain(&report) else {
+                    bail!("Failed to fetch Genoa cert chain");
+                };
+
+                let VendorCertificates { ask, ark, asvk } = fetched_vendor_certs;
+
+                // Create a cert chain from the fetched certificates
+                cert_table = vec![
+                    CertTableEntry::new(CertType::ARK, ark.to_der().expect("failed to convert")),
+                    CertTableEntry::new(CertType::ASK, ask.to_der().expect("failed to convert")),
+                    CertTableEntry::new(CertType::VCEK, asvk.to_der().expect("failed to convert"))
+                ];
+
+
+                let vendor_certs = VendorCertificates {
+                    ask: ask.clone(),
+                    ark: ark.clone(),
+                    asvk: asvk.clone(),
+                };
+
+                verify_report_signature(&report, &cert_table, &vendor_certs)?;
+            }
+        }
+
+        //verify_report_signature(&report, &cert_chain, &self.vendor_certs)?;
 
         if report.version != 2 {
             return Err(anyhow!("Unexpected report version"));
