@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_INSECURE_API: bool = false;
 const DEFAULT_INSECURE_HTTP: bool = false;
-const DEFAULT_SOCKET: &str = "127.0.0.1:8080";
+const DEFAULT_SOCKET: &str = "10.100.200.11:8068";
 const DEFAULT_TIMEOUT: i64 = 5;
 
 /// Contains all configurable KBS properties.

@@ -5,6 +5,9 @@
 #[cfg(feature = "nebula-plugin")]
 mod nebula;
 
+#[cfg(feature = "splitapi-plugin")]
+mod splitapi;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::fs;
@@ -14,6 +17,9 @@ use tokio::sync::RwLock;
 
 #[cfg(feature = "nebula-plugin")]
 use crate::resource::plugin::nebula::NebulaPluginConfig;
+
+#[cfg(feature = "splitapi-plugin")]
+use crate::resource::plugin::splitapi::SplitapiPluginConfig;
 
 trait PluginBuild {
     fn get_plugin_name(&self) -> &str;
@@ -34,6 +40,9 @@ impl PluginManagerConfig {
         // List of all plugins supported
         #[cfg(feature = "nebula-plugin")]
         p.push(Box::new(NebulaPluginConfig::default()));
+
+        #[cfg(feature = "splitapi-plugin")]
+        p.push(Box::new(SplitapiPluginConfig::default()));
 
         p
     }

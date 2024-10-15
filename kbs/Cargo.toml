@@ -42,6 +42,7 @@ rustls = ["actix-web/rustls", "dep:rustls", "dep:rustls-pemfile"]
 # Use openssl crypto stack for KBS
 openssl = ["actix-web/openssl", "dep:openssl"]
 nebula-plugin = []
+splitapi-plugin = []
 
 # Use aliyun KMS as KBS backend
 aliyun = ["kms/aliyun"]
