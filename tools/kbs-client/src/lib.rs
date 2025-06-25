@@ -4,7 +4,7 @@
 
 //! KBS client SDK.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -78,13 +78,15 @@ pub async fn attestation(
 /// Get secret resources with attestation results token
 /// Input parameters:
 /// - url: KBS server root URL.
-/// - path: Resource path, format must be `<top>/<middle>/<tail>`, e.g. `alice/key/example`.
+/// - plugin_name: Plugin name.
+/// - path: Resource path.
 /// - tee_key_pem: TEE private key file path (PEM format). This key must consistent with the public key in `token` claims.
 /// - token: Attestation Results Token file path.
 /// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
 pub async fn get_resource_with_token(
     url: &str,
-    path: &str,
+    plugin_name: &str,
+    resource_path: &str,
     tee_key_pem: String,
     token: String,
     kbs_root_certs_pem: Vec<String>,
@@ -99,23 +101,32 @@ pub async fn get_resource_with_token(
     }
     let mut client = client_builder.build()?;
 
-    let resource_kbs_uri = format!("kbs:///{path}");
-    let resource_bytes = client
-        .get_resource(serde_json::from_str(&format!("\"{resource_kbs_uri}\""))?)
-        .await?;
+    let resource_bytes = if plugin_name == "resource" {
+        let resource_kbs_uri = format!("kbs:///{resource_path}");
+        client
+            .get_resource(serde_json::from_str(&format!("\"{resource_kbs_uri}\""))?)
+            .await?
+    } else {
+        client
+            .get_plugin_resource(plugin_name.to_owned(), resource_path.to_owned())
+            .await?
+    };
+
     Ok(resource_bytes)
 }
 
 /// Get secret resources with attestation
 /// Input parameters:
 /// - url: KBS server root URL.
+/// - plugin_name: Plugin name.
 /// - path: Resource path, format must be `<top>/<middle>/<tail>`, e.g. `alice/key/example`.
 /// - [tee_pubkey_pem]: Public key (PEM format) of the RSA key pair generated in TEE.
 /// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
 /// - init_data: Plaintext init-data; should correspond to init-data measured at boot time.
 pub async fn get_resource_with_attestation(
     url: &str,
-    path: &str,
+    plugin_name: &str,
+    resource_path: &str,
     tee_key_pem: Option<String>,
     kbs_root_certs_pem: Vec<String>,
     init_data: Option<String>,
@@ -136,10 +147,17 @@ pub async fn get_resource_with_attestation(
 
     let mut client = client_builder.build()?;
 
-    let resource_kbs_uri = format!("kbs:///{path}");
-    let resource_bytes = client
-        .get_resource(serde_json::from_str(&format!("\"{resource_kbs_uri}\""))?)
-        .await?;
+    let resource_bytes = if plugin_name == "resource" {
+        let resource_kbs_uri = format!("kbs:///{resource_path}");
+        client
+            .get_resource(serde_json::from_str(&format!("\"{resource_kbs_uri}\""))?)
+            .await?
+    } else {
+        client
+            .get_plugin_resource(plugin_name.to_owned(), resource_path.to_owned())
+            .await?
+    };
+
     Ok(resource_bytes)
 }
 
@@ -369,6 +387,112 @@ pub async fn get_rv(
 
     match res.status() {
         reqwest::StatusCode::OK => Ok(res.text().await?),
+        _ => {
+            bail!("Request Failed, Response: {:?}", res.text().await?)
+        }
+    }
+}
+
+/// Get the list of sandboxes that have credentials in KBS.
+/// Input parameters:
+/// - url: KBS server root URL.
+/// - auth_key: KBS owner's authenticate private key (PEM string).
+/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
+pub async fn list_pods(
+    url: &str,
+    auth_key: String,
+    kbs_root_certs_pem: Vec<String>,
+) -> Result<Vec<String>> {
+    let token = sign_admin_token(&auth_key)?;
+
+    let http_client = build_http_client(kbs_root_certs_pem)?;
+
+    let cmd = "list_pods";
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/pki_vault/{}", url, cmd);
+
+    let res = http_client
+        .get(resource_url)
+        .header("Content-Type", "text/xml")
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    match res.status() {
+        reqwest::StatusCode::OK => {
+            let body = res.text().await?;
+            let pods: Vec<String> = serde_json::from_str(&body)?;
+            Ok(pods)
+        },
+        _ => {
+            bail!("Request Failed, Response: {:?}", res.text().await?)
+        }
+    }
+}
+
+/// Parameters for the credential request
+///
+/// These parameters are provided in the request via URL query string.
+/// Parameters taken by the "pki-vault" plugin to generate a unique key
+/// for a sandbox store and retrieve credentials specific to the sandbox.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+pub struct SandboxParams {
+    /// Required: ID of a sandbox or pod
+    pub id: String,
+
+    /// Required: IP of a sandbox or pod
+    pub ip: String,
+
+    /// Required: Name of a sandbox or pod
+    pub name: String,
+}
+
+impl TryFrom<&str> for SandboxParams {
+    type Error = Error;
+
+    fn try_from(query: &str) -> Result<Self> {
+        let params: SandboxParams = serde_qs::from_str(query)?;
+        Ok(params)
+    }
+}
+
+/// Get the credential of the sandbox pod given in the query string.
+/// Input parameters:
+/// - url: KBS server root URL.
+/// - auth_key: KBS owner's authenticate private key (PEM string).
+/// - query: Query string to provide the ID, name and IP for requesting a particular pod's cred
+/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
+pub async fn get_client_credentials(
+    url: &str,
+    auth_key: String,
+    query: &str,
+    kbs_root_certs_pem: Vec<String>,
+) -> Result<String> {
+    // Parse the query string given with the command to get the `name`
+    let params = SandboxParams::try_from(query)?;
+
+    let token = sign_admin_token(&auth_key)?;
+
+    let http_client = build_http_client(kbs_root_certs_pem)?;
+
+    let cmd = "get_client_credentials";
+    let resource_url = format!(
+        "{}/{KBS_URL_PREFIX}/pki_vault/{}?id={}&ip={}&name={}",
+        url, cmd, params.id, params.ip, params.name
+    );
+
+    let res = http_client
+        .get(resource_url)
+        .header("Content-Type", "text/xml")
+        .bearer_auth(token)
+        .send()
+        .await?;
+
+    match res.status() {
+        reqwest::StatusCode::OK => {
+            let body = res.text().await?;
+
+            Ok(body)
+        },
         _ => {
             bail!("Request Failed, Response: {:?}", res.text().await?)
         }
