@@ -4,7 +4,7 @@
 
 //! KBS client SDK.
 
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{anyhow, bail, Result};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
@@ -393,11 +393,6 @@ pub async fn get_rv(
     }
 }
 
-/// Get the list of sandboxes that have credentials in KBS.
-/// Input parameters:
-/// - url: KBS server root URL.
-/// - auth_key: KBS owner's authenticate private key (PEM string).
-/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
 pub async fn list_pods(
     url: &str,
     auth_key: String,
@@ -408,11 +403,10 @@ pub async fn list_pods(
     let http_client = build_http_client(kbs_root_certs_pem)?;
 
     let cmd = "list_pods";
-    let resource_url = format!("{}/{KBS_URL_PREFIX}/pki_vault/{}", url, cmd);
-
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/keyflux/{}", url, cmd);
     let res = http_client
-        .get(resource_url)
-        .header("Content-Type", "text/xml")
+        .post(resource_url)
+        .header("Content-Type", "application/octet-stream")
         .bearer_auth(token)
         .send()
         .await?;
@@ -429,60 +423,21 @@ pub async fn list_pods(
     }
 }
 
-/// Parameters for the credential request
-///
-/// These parameters are provided in the request via URL query string.
-/// Parameters taken by the "pki-vault" plugin to generate a unique key
-/// for a sandbox store and retrieve credentials specific to the sandbox.
-#[derive(Debug, PartialEq, serde::Deserialize)]
-pub struct SandboxParams {
-    /// Required: ID of a sandbox or pod
-    pub id: String,
-
-    /// Required: IP of a sandbox or pod
-    pub ip: String,
-
-    /// Required: Name of a sandbox or pod
-    pub name: String,
-}
-
-impl TryFrom<&str> for SandboxParams {
-    type Error = Error;
-
-    fn try_from(query: &str) -> Result<Self> {
-        let params: SandboxParams = serde_qs::from_str(query)?;
-        Ok(params)
-    }
-}
-
-/// Get the credential of the sandbox pod given in the query string.
-/// Input parameters:
-/// - url: KBS server root URL.
-/// - auth_key: KBS owner's authenticate private key (PEM string).
-/// - query: Query string to provide the ID, name and IP for requesting a particular pod's cred
-/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
-pub async fn get_client_credentials(
+pub async fn client_creds(
     url: &str,
     auth_key: String,
     query: &str,
     kbs_root_certs_pem: Vec<String>,
 ) -> Result<String> {
-    // Parse the query string given with the command to get the `name`
-    let params = SandboxParams::try_from(query)?;
-
     let token = sign_admin_token(&auth_key)?;
 
     let http_client = build_http_client(kbs_root_certs_pem)?;
 
-    let cmd = "get_client_credentials";
-    let resource_url = format!(
-        "{}/{KBS_URL_PREFIX}/pki_vault/{}?id={}&ip={}&name={}",
-        url, cmd, params.id, params.ip, params.name
-    );
-
+    let cmd = "client_creds";
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/keyflux/{}?{}", url, cmd, query);
     let res = http_client
-        .get(resource_url)
-        .header("Content-Type", "text/xml")
+        .post(resource_url)
+        .header("Content-Type", "application/octet-stream")
         .bearer_auth(token)
         .send()
         .await?;
@@ -493,6 +448,34 @@ pub async fn get_client_credentials(
 
             Ok(body)
         },
+        _ => {
+            bail!("Request Failed, Response: {:?}", res.text().await?)
+        }
+    }
+}
+
+pub async fn update_cert(
+    url: &str,
+    auth_key: String,
+    query: &str,
+    spec_bytes: Vec<u8>,
+    kbs_root_certs_pem: Vec<String>,
+) -> Result<()> {
+    let token = sign_admin_token(&auth_key)?;
+
+    let http_client = build_http_client(kbs_root_certs_pem)?;
+
+    let cmd = "update_cert";
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/keyflux/{}?{}", url, cmd, query);
+    let res = http_client
+        .post(resource_url)
+        .header("Content-Type", "application/octet-stream")
+        .bearer_auth(token)
+        .body(spec_bytes.clone())
+        .send()
+        .await?;
+    match res.status() {
+        reqwest::StatusCode::OK => Ok(()),
         _ => {
             bail!("Request Failed, Response: {:?}", res.text().await?)
         }

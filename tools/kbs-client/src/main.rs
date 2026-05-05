@@ -11,7 +11,6 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::json;
 use std::path::PathBuf;
 use tracing_subscriber::{fmt, EnvFilter};
-use serde::Deserialize;
 
 #[derive(Parser)]
 #[clap(name = "KBS client")]
@@ -36,8 +35,8 @@ enum Commands {
     Config(Config),
 
     /// PKI vault client APIs
-    #[clap(arg_required_else_help = true)]
-    PKIVaultConfig(PKIVaultConfig),
+   // #[clap(arg_required_else_help = true)]
+    //KeyFluxConfig(KeyFluxConfig),
 
     /// Get confidential resource
     #[clap(arg_required_else_help = true)]
@@ -50,7 +49,7 @@ enum Commands {
 
         /// KBS plugin resource path, e.g:
         /// nebula_ca:   credential?ip=10.9.8.1&netbits=21
-        /// pki_vault:   credential?ip=10.9.8.1&netbits=21 // change it
+        /// keyflux:   credential?ip=10.9.8.1&spec="sjflkdsj" // change it
         /// resource:    my_repo/resource_type/123abc
         ///
         /// Document: https://github.com/confidential-containers/attestation-agent/blob/main/docs/KBS_URI.md
@@ -204,46 +203,22 @@ enum ConfigCommands {
         #[clap(long, action)]
         as_single_value: bool,
     },
-}
-
-#[derive(Args)]
-struct PKIVaultConfig {
-    #[clap(subcommand)]
-    command: PKIVaultCommands,
-
-    /// PEM file path of private key used to authenticate the resource registration endpoint token (JWT)
-    /// to Key Broker Service. This key can sign legal JWTs.
-    /// This client tool only support ED22519 key now.
-    #[clap(long, value_parser)]
-    auth_private_key: PathBuf,
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Subcommand)]
-enum PKIVaultCommands {
-    /// Set confidential resource
-    ListPods, //{
-        // KBS Resource path, e.g my_repo/resource_type/123abc
-        //
-        // Document: https://github.com/confidential-containers/attestation-agent/blob/main/docs/KBS_URI.md
-        //#[clap(long, value_parser)]
-        //path: String,
-    //},
-    GetClientCredential {
-        // KBS Resource path, e.g my_repo/resource_type/123abc
-        //
-        // Document: https://github.com/confidential-containers/attestation-agent/blob/main/docs/KBS_URI.md
+    ListPods,
+    GetClientCreds {
+        // E.g, id=123&name=myname
         #[clap(long, value_parser)]
         query: String,
     },
-    //Version //TODO
-}
+    UpdateCert {
+        // E.g, id=123&name=myname
+        #[clap(long, value_parser)]
+        query: String,
 
-#[derive(Debug, Deserialize)]
-pub struct Credentials {
-    pub key: Vec<u8>,
-    pub cert: Vec<u8>,
-    pub ca_cert: Vec<u8>,
+        /// Spec file path
+        #[clap(long, value_parser)]
+        spec_file: PathBuf,
+    }
+
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -453,12 +428,7 @@ async fn main() -> Result<()> {
                         kbs_client::get_rv(cli.url, auth_key.clone(), kbs_cert.clone(), id).await?;
                     println!("{:?}", values);
                 }
-            }
-        }
-        Commands::PKIVaultConfig(config) => {
-            let auth_key = std::fs::read_to_string(config.auth_private_key)?;
-            match config.command {
-                PKIVaultCommands::ListPods {
+                ConfigCommands::ListPods {
                 } => {
                     let result = kbs_client::list_pods(
                         &cli.url,
@@ -469,10 +439,10 @@ async fn main() -> Result<()> {
 
                     println!("Pods: {:?}", result);
                 }
-                PKIVaultCommands::GetClientCredential {
+                ConfigCommands::GetClientCreds {
                     query,
                 } => {
-                    let credentials = kbs_client::get_client_credentials(
+                    let credentials = kbs_client::client_creds(
                         &cli.url,
                         auth_key.clone(),
                         &query,
@@ -480,18 +450,28 @@ async fn main() -> Result<()> {
                     )
                     .await?;
 
-                    if credentials.trim().is_empty() || credentials.trim() == "\"\"" {
-                        bail!("Credential is empty or invalid");
-                    }
-
-                    let resource: Credentials = match serde_json::from_str(&credentials) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            bail!("Failed to parse credentials {}", e);
-                        }
-                    };
-
-                    println!("{:?}", resource);
+                    println!("{}", serde_json::to_string_pretty(&json!({
+                        "credentials": credentials,
+                        "length": credentials.len(),
+                    })).unwrap());
+                }
+                ConfigCommands::UpdateCert {
+                    query,
+                    spec_file,
+                } => {
+                    let spec_bytes = std::fs::read(spec_file)?;
+                    kbs_client::update_cert(
+                        &cli.url,
+                        auth_key.clone(),
+                        &query,
+                        spec_bytes.clone(),
+                        kbs_cert.clone(),
+                    )
+                    .await?;
+                    println!(
+                        "Update certificate success \n spec: {}",
+                        STANDARD.encode(spec_bytes)
+                    );
                 }
             }
         }
