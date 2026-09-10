@@ -35,6 +35,10 @@ enum Commands {
     #[clap(arg_required_else_help = true)]
     Config(Config),
 
+    /// Interact with the credgen plugin (admin operations)
+    #[clap(arg_required_else_help = true)]
+    Credgen(Credgen),
+
     /// Get confidential resource
     #[clap(arg_required_else_help = true)]
     GetResource {
@@ -194,6 +198,45 @@ enum ConfigCommands {
     },
 }
 
+#[derive(Args)]
+struct Credgen {
+    #[clap(subcommand)]
+    command: CredgenCommands,
+
+    /// Optional admin bearer token file path.
+    /// Falls back to the same discovery chain as Config.
+    #[clap(long, value_parser)]
+    admin_token_file: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum CredgenCommands {
+    /// List all pod identity keys held in the credgen plugin store
+    ListPods,
+
+    /// Retrieve the public-side credentials for a given identity
+    ClientCreds {
+        /// URL query string identifying the secret, e.g.
+        /// `name=pod-abc&ns=default&secret_name=grpc&secret_type=tls`
+        #[clap(long, value_parser)]
+        query: String,
+    },
+
+    /// Update X.509 certificate details for a given identity.
+    /// The spec file must be a JSON object with optional `"server"` and/or
+    /// `"client"` keys, each containing TlsCertDetails fields.
+    UpdateCert {
+        /// URL query string identifying the target identity, e.g.
+        /// `name=pod-abc&ns=default`
+        #[clap(long, value_parser)]
+        query: String,
+
+        /// Path to the JSON spec file
+        #[clap(long, value_parser)]
+        spec_file: PathBuf,
+    },
+}
+
 const DOCKER_COMPOSE_ADMIN_TOKEN_PATH: &str = "kbs/config/docker-compose/admin-token";
 
 #[tokio::main(flavor = "current_thread")]
@@ -305,6 +348,40 @@ async fn main() -> Result<()> {
                 )
                 .await?;
                 println!("{}", STANDARD.encode(resource_bytes));
+            }
+        }
+        Commands::Credgen(credgen) => {
+            let admin_token = resolve_admin_token(&credgen.admin_token_file)?;
+            match credgen.command {
+                CredgenCommands::ListPods => {
+                    let pods =
+                        kbs_client::credgen_list_pods(&cli.url, admin_token, kbs_cert.clone())
+                            .await?;
+                    println!("{}", serde_json::to_string_pretty(&pods)?);
+                }
+                CredgenCommands::ClientCreds { query } => {
+                    let creds = kbs_client::credgen_client_creds(
+                        &cli.url,
+                        admin_token,
+                        &query,
+                        kbs_cert.clone(),
+                    )
+                    .await?;
+                    println!("{creds}");
+                }
+                CredgenCommands::UpdateCert { query, spec_file } => {
+                    let spec_bytes = std::fs::read(&spec_file)
+                        .inspect_err(|_| eprintln!("Failed to read: {}", spec_file.display()))?;
+                    kbs_client::credgen_update_cert(
+                        &cli.url,
+                        admin_token,
+                        &query,
+                        spec_bytes,
+                        kbs_cert.clone(),
+                    )
+                    .await?;
+                    println!("UpdateCert success");
+                }
             }
         }
         Commands::Config(config) => {

@@ -357,6 +357,112 @@ pub async fn get_rv(
     }
 }
 
+/// List all pod identity keys currently held in the credgen plugin store.
+/// Input parameters:
+/// - url: KBS server root URL.
+/// - admin_token: Optional admin bearer token. If None, request is anonymous.
+/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
+pub async fn credgen_list_pods(
+    url: &str,
+    admin_token: Option<String>,
+    kbs_root_certs_pem: Vec<String>,
+) -> Result<Vec<String>> {
+    let http_client = build_http_client(kbs_root_certs_pem)?;
+
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/credgen/list_pods", url);
+    let mut req = http_client
+        .post(resource_url)
+        .header("Content-Type", "application/octet-stream");
+    if let Some(token) = admin_token {
+        req = req.bearer_auth(token);
+    } else {
+        warn!("No admin token provided; sending anonymous request");
+    }
+    let res = req.send().await?;
+
+    match res.status() {
+        reqwest::StatusCode::OK => {
+            let body = res.text().await?;
+            let pods: Vec<String> = serde_json::from_str(&body)?;
+            Ok(pods)
+        }
+        _ => {
+            bail!("Request Failed, Response: {:?}", res.text().await?)
+        }
+    }
+}
+
+/// Retrieve the public-side credentials for a given identity from the credgen plugin.
+/// Input parameters:
+/// - url: KBS server root URL.
+/// - admin_token: Optional admin bearer token. If None, request is anonymous.
+/// - query: URL query string, e.g. `name=pod-abc&ns=default&secret_name=grpc&secret_type=tls`.
+/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
+pub async fn credgen_client_creds(
+    url: &str,
+    admin_token: Option<String>,
+    query: &str,
+    kbs_root_certs_pem: Vec<String>,
+) -> Result<String> {
+    let http_client = build_http_client(kbs_root_certs_pem)?;
+
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/credgen/client_creds?{}", url, query);
+    let mut req = http_client
+        .post(resource_url)
+        .header("Content-Type", "application/octet-stream");
+    if let Some(token) = admin_token {
+        req = req.bearer_auth(token);
+    } else {
+        warn!("No admin token provided; sending anonymous request");
+    }
+    let res = req.send().await?;
+
+    match res.status() {
+        reqwest::StatusCode::OK => Ok(res.text().await?),
+        _ => {
+            bail!("Request Failed, Response: {:?}", res.text().await?)
+        }
+    }
+}
+
+/// Update the X.509 certificate details (subject fields, validity) for a given identity
+/// in the credgen plugin. The body must be a JSON object with optional `"server"` and/or
+/// `"client"` keys, each containing a `TlsCertDetails` object.
+/// Input parameters:
+/// - url: KBS server root URL.
+/// - admin_token: Optional admin bearer token. If None, request is anonymous.
+/// - query: URL query string identifying the target identity, e.g. `name=pod-abc&ns=default`.
+/// - spec_bytes: JSON body bytes (serialised `CertDetailsWrapper`).
+/// - kbs_root_certs_pem: Custom HTTPS root certificate of KBS server. It can be left blank.
+pub async fn credgen_update_cert(
+    url: &str,
+    admin_token: Option<String>,
+    query: &str,
+    spec_bytes: Vec<u8>,
+    kbs_root_certs_pem: Vec<String>,
+) -> Result<()> {
+    let http_client = build_http_client(kbs_root_certs_pem)?;
+
+    let resource_url = format!("{}/{KBS_URL_PREFIX}/credgen/update_cert?{}", url, query);
+    let mut req = http_client
+        .post(resource_url)
+        .header("Content-Type", "application/octet-stream")
+        .body(spec_bytes);
+    if let Some(token) = admin_token {
+        req = req.bearer_auth(token);
+    } else {
+        warn!("No admin token provided; sending anonymous request");
+    }
+    let res = req.send().await?;
+
+    match res.status() {
+        reqwest::StatusCode::OK => Ok(()),
+        _ => {
+            bail!("Request Failed, Response: {:?}", res.text().await?)
+        }
+    }
+}
+
 fn build_http_client(kbs_root_certs_pem: Vec<String>) -> Result<reqwest::Client> {
     let mut client_builder =
         reqwest::Client::builder().user_agent(format!("kbs-client/{}", env!("CARGO_PKG_VERSION")));
