@@ -76,7 +76,7 @@ pub async fn get_resource_with_token(
     }
     let mut client = client_builder.build()?;
 
-    let resource_kbs_uri = format!("kbs:///{path}");
+    let resource_kbs_uri = format!("kbs+credgen:///{path}");
     let resource_bytes = client
         .get_resource(serde_json::from_str(&format!("\"{resource_kbs_uri}\""))?)
         .await?;
@@ -113,7 +113,7 @@ pub async fn get_resource_with_attestation(
 
     let mut client = client_builder.build()?;
 
-    let resource_kbs_uri = format!("kbs:///{path}");
+    let resource_kbs_uri = format!("kbs+credgen:///{path}");
     let resource_bytes = client
         .get_resource(serde_json::from_str(&format!("\"{resource_kbs_uri}\""))?)
         .await?;
